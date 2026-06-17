@@ -30,5 +30,7 @@ SLURM job array patterns, HPC best practices, and example scripts for Jubail HPC
 
 | Script | Description |
 |--------|-------------|
+| [utilities/gpu_monitor.py](utilities/gpu_monitor.py) | GPU cluster dashboard — node capacity, allocation, jobs, with color-coded bars |
+| [utilities/gpu_find.py](utilities/gpu_find.py) | Find the best available GPU slot for a workload (by count, VRAM, condo preference) |
 | [utilities/get-job-info.sh](utilities/get-job-info.sh) | Extract job metadata and sbatch contents from a SLURM job ID |
 | [utilities/getNode.sh](utilities/getNode.sh) | Look up which compute nodes ran a job |
