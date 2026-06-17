@@ -12,6 +12,8 @@ Usage:
     python gpu_monitor.py --user drn2      # highlight user's jobs
     python gpu_monitor.py --json           # machine-readable output
     python gpu_monitor.py --compact        # one-line-per-node summary
+    python gpu_monitor.py --jobs           # all running/pending jobs sorted by runtime
+    python gpu_monitor.py --users          # GPU allocation per user
     python gpu_monitor.py --condo          # a2s2 condo nodes only
 """
 
@@ -355,9 +357,9 @@ def format_node_detail(node: GpuNode, highlight_user: Optional[str] = None) -> s
     header = (
         f"  {C.BOLD}{node.name:<8}{C.RESET} "
         f"{etype:<10} {vram:<6} "
-        f"GPU {gbar} {node.gpu_used}/{node.gpu_total}  "
-        f"CPU {node.cpus_alloc:>3}/{node.cpus_total:<3}  "
-        f"MEM {mbar} {node.mem_alloc_gb:>6.0f}/{node.mem_total_gb:<6.0f}GB  "
+        f"{gbar} {node.gpu_used}/{node.gpu_total}  "
+        f"{node.cpus_alloc:>3}/{node.cpus_total:<3}  "
+        f"{mbar} {node.mem_alloc_gb:>6.0f}/{node.mem_total_gb:<6.0f}GB  "
         f"{state_str}{tag_str}"
     )
 
@@ -424,6 +426,14 @@ def print_dashboard(nodes: dict[str, GpuNode], jobs: list[GpuJob], args):
             f"({g_free}/{g_total} GPUs free, {len(group_nodes)} nodes)"
         )
         print(f"  {'─' * 90}")
+        print(
+            f"  {C.DIM}{'NODE':<9}"
+            f"{'TYPE':<11}{'VRAM':<7}"
+            f"{'GPU':<18}      "
+            f"{'CPU':<8} "
+            f"{'MEM':<18}       "
+            f"{'STATE'}{C.RESET}"
+        )
         for n in group_nodes:
             print(format_node_detail(n, highlight_user=args.user))
         print()
@@ -477,6 +487,166 @@ def print_compact(nodes: dict[str, GpuNode], args):
             f"{n.mem_alloc_gb:>5.0f}/{n.mem_total_gb:<5.0f} "
             f"{','.join(tags)}"
         )
+
+
+def parse_time_to_minutes(time_str: str) -> float:
+    time_str = time_str.strip()
+    days = 0
+    if "-" in time_str:
+        d, time_str = time_str.split("-", 1)
+        days = int(d)
+    parts = time_str.split(":")
+    if len(parts) == 3:
+        h, m, s = parts
+        return days * 1440 + int(h) * 60 + int(m) + int(s) / 60
+    if len(parts) == 2:
+        m, s = parts
+        return days * 1440 + int(m) + int(s) / 60
+    return 0
+
+
+def print_jobs(nodes: dict[str, GpuNode], jobs: list[GpuJob], args):
+    job_list = [j for j in jobs if j.state == "R"]
+
+    if args.type:
+        t = args.type.lower().replace("-", "").replace("_", "")
+        typed_nodes = {n.name for n in nodes.values()
+                       if n.effective_gpu_type.replace("-", "") == t or n.gpu_type == t}
+        job_list = [j for j in job_list if j.node in typed_nodes]
+
+    job_list.sort(key=lambda j: parse_time_to_minutes(j.time), reverse=True)
+
+    node_gpu_type = {}
+    for n in nodes.values():
+        node_gpu_type[n.name] = (n.effective_gpu_type.upper(), n.vram_gb)
+
+    print()
+    print(f"  {C.BOLD}Running Jobs{C.RESET}  ({len(job_list)} jobs)")
+    print(f"  {'─' * 95}")
+    print(
+        f"  {C.DIM}{'JOB ID':<12} {'USER':<12} {'NODE':<8} {'GPU TYPE':<10} "
+        f"{'GPUS':>4}  {'CPUS':>4}  {'RUNTIME':<16} {'NAME'}{C.RESET}"
+    )
+    print(f"  {'─' * 95}")
+
+    for j in job_list:
+        gpu_t, vram = node_gpu_type.get(j.node, ("?", 0))
+        user_color = C.MAGENTA + C.BOLD if (args.user and j.user == args.user) else ""
+        user_reset = C.RESET if user_color else ""
+        print(
+            f"  {j.job_id:<12} "
+            f"{user_color}{j.user:<12}{user_reset} "
+            f"{j.node:<8} {gpu_t:<10} "
+            f"{j.gpus_requested:>4}  {j.cpus:>4}  "
+            f"{j.time:<16} {j.name[:40]}"
+        )
+
+    pending = [j for j in jobs if j.state == "PD"]
+    if pending:
+        print()
+        print(f"  {C.BOLD}Pending Jobs{C.RESET}  ({len(pending)} jobs)")
+        print(f"  {'─' * 95}")
+        print(
+            f"  {C.DIM}{'JOB ID':<12} {'USER':<12} {'':8} {'GPU REQ':<10} "
+            f"{'GPUS':>4}  {'CPUS':>4}  {'':16} {'NAME'}{C.RESET}"
+        )
+        print(f"  {'─' * 95}")
+        for j in pending:
+            user_color = C.MAGENTA + C.BOLD if (args.user and j.user == args.user) else ""
+            user_reset = C.RESET if user_color else ""
+            gpu_req = j.gpu_type_requested.upper() if j.gpu_type_requested else "any"
+            print(
+                f"  {j.job_id:<12} "
+                f"{user_color}{j.user:<12}{user_reset} "
+                f"{'':8} {gpu_req:<10} "
+                f"{j.gpus_requested:>4}  {j.cpus:>4}  "
+                f"{'':16} {j.name[:40]}"
+            )
+
+    print()
+
+
+def print_users(nodes: dict[str, GpuNode], jobs: list[GpuJob], args):
+    running = [j for j in jobs if j.state == "R"]
+    pending = [j for j in jobs if j.state == "PD"]
+
+    if args.type:
+        t = args.type.lower().replace("-", "").replace("_", "")
+        typed_nodes = {n.name for n in nodes.values()
+                       if n.effective_gpu_type.replace("-", "") == t or n.gpu_type == t}
+        running = [j for j in running if j.node in typed_nodes]
+
+    node_gpu_type = {}
+    for n in nodes.values():
+        node_gpu_type[n.name] = n.effective_gpu_type.upper()
+
+    users: dict[str, dict] = {}
+    for j in running:
+        if j.user not in users:
+            users[j.user] = {
+                "gpus": 0, "jobs": 0, "gpu_types": set(),
+                "nodes": set(), "longest_min": 0, "longest_str": "",
+                "pending": 0,
+            }
+        u = users[j.user]
+        u["gpus"] += j.gpus_requested
+        u["jobs"] += 1
+        u["nodes"].add(j.node)
+        gpu_t = node_gpu_type.get(j.node, "?")
+        u["gpu_types"].add(gpu_t)
+        t_min = parse_time_to_minutes(j.time)
+        if t_min > u["longest_min"]:
+            u["longest_min"] = t_min
+            u["longest_str"] = j.time.strip()
+
+    for j in pending:
+        if j.user not in users:
+            users[j.user] = {
+                "gpus": 0, "jobs": 0, "gpu_types": set(),
+                "nodes": set(), "longest_min": 0, "longest_str": "",
+                "pending": 0,
+            }
+        users[j.user]["pending"] += 1
+
+    user_list = sorted(users.items(), key=lambda x: x[1]["gpus"], reverse=True)
+
+    total_gpus = sum(n.gpu_total for n in nodes.values())
+    total_used = sum(u["gpus"] for _, u in user_list)
+
+    print()
+    print(f"  {C.BOLD}GPU Usage by User{C.RESET}  ({len(user_list)} users)")
+    print(f"  {'─' * 95}")
+    print(
+        f"  {C.DIM}{'USER':<12} {'GPUS':>4}  {'SHARE':>6}  {'JOBS':>4}  {'PEND':>4}  "
+        f"{'GPU TYPES':<20} {'NODES':<14} {'LONGEST RUN'}{C.RESET}"
+    )
+    print(f"  {'─' * 95}")
+
+    for username, u in user_list:
+        share = (u["gpus"] / total_gpus * 100) if total_gpus else 0
+        gpu_types = ",".join(sorted(u["gpu_types"]))
+        node_str = ",".join(sorted(u["nodes"]))
+        if len(node_str) > 13:
+            node_str = f"{len(u['nodes'])} nodes"
+
+        user_color = C.MAGENTA + C.BOLD if (args.user and username == args.user) else ""
+        user_reset = C.RESET if user_color else ""
+
+        share_color = C.RED if share > 20 else (C.YELLOW if share > 10 else "")
+        share_reset = C.RESET if share_color else ""
+
+        print(
+            f"  {user_color}{username:<12}{user_reset} "
+            f"{u['gpus']:>4}  "
+            f"{share_color}{share:>5.1f}%{share_reset}  "
+            f"{u['jobs']:>4}  "
+            f"{u['pending']:>4}  "
+            f"{gpu_types:<20} "
+            f"{node_str:<14} "
+            f"{u['longest_str']}"
+        )
+
+    print()
 
 
 def print_json(nodes: dict[str, GpuNode], jobs: list[GpuJob]):
@@ -536,6 +706,8 @@ def main():
     parser.add_argument("--user", "-u", default="drn2", help="Highlight user's jobs (default: drn2)")
     parser.add_argument("--json", "-j", action="store_true", help="JSON output")
     parser.add_argument("--compact", "-c", action="store_true", help="Compact one-line-per-node output")
+    parser.add_argument("--jobs", action="store_true", help="Job-focused view: all running/pending jobs")
+    parser.add_argument("--users", action="store_true", help="User summary: GPU allocation per user")
     parser.add_argument("--condo", action="store_true", help="Only show condo-only / a2s2 nodes")
     parser.add_argument("--no-color", action="store_true", help="Disable colors")
     args = parser.parse_args()
@@ -548,6 +720,10 @@ def main():
 
     if args.json:
         print_json(nodes, jobs)
+    elif args.jobs:
+        print_jobs(nodes, jobs, args)
+    elif args.users:
+        print_users(nodes, jobs, args)
     elif args.compact:
         print_compact(nodes, args)
     else:

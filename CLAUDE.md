@@ -6,7 +6,7 @@ SLURM guides, GPU monitoring tools, job array patterns, and example scripts for 
 
 | Tool | Purpose | Usage |
 |------|---------|-------|
-| `utilities/gpu_monitor.py` | GPU cluster dashboard | `python3 utilities/gpu_monitor.py [--free] [--type X] [--compact] [--condo] [--json]` |
+| `utilities/gpu_monitor.py` | GPU cluster dashboard | `python3 utilities/gpu_monitor.py [--free] [--type X] [--compact] [--jobs] [--users] [--condo] [--json]` |
 | `utilities/gpu_find.py` | Find best GPU slot for a workload | `python3 utilities/gpu_find.py [--gpus N] [--vram GB] [--suggest] [--condo]` |
 
 ## Notes
