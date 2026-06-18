@@ -701,6 +701,56 @@ conda activate /scratch/drn2/software/conda-mamba_1
 
 ---
 
+### ❌ MISTAKE 6: Letting your app pick the GPU by index (false "low GPU usage" kills)
+
+Jubail's monitor will **kill a GPU job it believes used the GPU < ~2 hours**
+(email subject: *"Low GPU usage for job ... in last 2 hours"*). A genuinely
+busy job can still get killed because of a **GPU index-scheme mismatch**:
+
+- SLURM allocates a GPU by its **global** index and the usage monitor keys on
+  that index (it reports e.g. `GPUIdx: 1 AveUtil: 0.00`).
+- But **inside the job's cgroup**, that same card is remapped to **logical
+  index 0** — `nvidia-smi` shows only `index 0`, and `CUDA_VISIBLE_DEVICES=0`.
+
+If your app trusts "device 0" / a bare index, the two numbering schemes can
+disagree and the monitor reads 0% on a card that is actually pegged at 100%.
+(Real case: ALGAE_SENATE ollama job `16337473_0` ran an H100 flat-out for 13h
+and was still killed for `AveUtil: 0.00`.)
+
+**Diagnose** — inside the job, these disagree when the bug is present:
+```bash
+echo "SLURM_JOB_GPUS=$SLURM_JOB_GPUS"          # global index the monitor watches
+nvidia-smi --query-gpu=index,uuid --format=csv # cgroup-local index (usually 0)
+```
+
+**Fix — pin to the allocated GPU by UUID (unambiguous under any scheme):**
+```bash
+# Place AFTER `module load cuda/...`, BEFORE launching your GPU process.
+GPU_UUID=$(nvidia-smi --query-gpu=uuid --format=csv,noheader | head -1 | tr -d ' ')
+if [[ -n "$GPU_UUID" ]]; then
+    export CUDA_VISIBLE_DEVICES="$GPU_UUID"
+    echo "[job] pinned to GPU UUID=$GPU_UUID (SLURM_JOB_GPUS=${SLURM_JOB_GPUS:-unset})"
+fi
+```
+
+**Also recommended — a utilization heartbeat** so you have proof-of-busy if the
+monitor disagrees again (and early warning if a GPU is *genuinely* idle):
+```bash
+( while true; do
+    echo "$(date -u +%FT%TZ) $(nvidia-smi --query-gpu=index,utilization.gpu,memory.used \
+            --format=csv,noheader,nounits | paste -sd';')" >> logs/gpuutil_${SLURM_JOB_ID}.log
+    sleep 300
+  done ) &
+HEARTBEAT_PID=$!
+# remember to `kill "$HEARTBEAT_PID"` in your cleanup/trap
+```
+
+> Note: pinning by UUID is what `MainGPU`/`CUDA_VISIBLE_DEVICES` ultimately
+> resolve to anyway, so it never *hurts* — make it the default in every GPU
+> sbatch, not just ones that have already been flagged.
+
+---
+
 ## 🔍 Debugging Failed Jobs
 
 ### Step-by-Step Debugging Process
@@ -731,6 +781,7 @@ cat logs/slurm_12345.out
 | "Permission denied" | File permissions | Check file ownership/permissions |
 | Job "OUT_OF_MEMORY" | Insufficient RAM | Increase `--mem=` or optimize code |
 | Job "TIMEOUT" | Exceeded time limit | Increase `--time=` or optimize code |
+| Email: "Low GPU usage ... killed" (but job *was* busy) | GPU index mismatch (cgroup idx 0 vs global `SLURM_JOB_GPUS`) | Pin `CUDA_VISIBLE_DEVICES` to the GPU UUID — see MISTAKE 6 |
 
 **5. Test interactively:**
 ```bash
